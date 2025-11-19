@@ -1,7 +1,7 @@
 import streamlit as st
 import googlemaps
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import io
 
@@ -39,7 +39,7 @@ def obtenir_mode_transport(mode):
     return modes.get(mode.upper(), 'driving')
 
 # Fonction pour calculer un trajet
-def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart):
+def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart, jour_semaine=None):
     try:
         params = {
             'origins': origine,
@@ -49,9 +49,42 @@ def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart):
         }
         
         if heure_depart and str(heure_depart).strip():
+            # Mapping des jours de la semaine en français
+            jours = {
+                'lundi': 0, 'monday': 0,
+                'mardi': 1, 'tuesday': 1,
+                'mercredi': 2, 'wednesday': 2,
+                'jeudi': 3, 'thursday': 3,
+                'vendredi': 4, 'friday': 4,
+                'samedi': 5, 'saturday': 5,
+                'dimanche': 6, 'sunday': 6
+            }
+            
+            # Déterminer la date du prochain jour spécifié
             today = datetime.now()
+            
+            if jour_semaine and str(jour_semaine).strip():
+                # Trouver le jour demandé
+                jour_demande = None
+                for key, value in jours.items():
+                    if key.lower() == str(jour_semaine).strip().lower():
+                        jour_demande = value
+                        break
+                
+                if jour_demande is not None:
+                    # Calculer le nombre de jours jusqu'au prochain jour demandé
+                    jours_jusque = (jour_demande - today.weekday()) % 7
+                    if jours_jusque == 0:
+                        jours_jusque = 7  # Prendre la semaine prochaine si c'est aujourd'hui
+                    target_date = today + timedelta(days=jours_jusque)
+                else:
+                    target_date = today
+            else:
+                target_date = today
+            
+            # Définir l'heure
             heures, minutes = str(heure_depart).split(':')
-            departure_time = today.replace(hour=int(heures), minute=int(minutes), second=0)
+            departure_time = target_date.replace(hour=int(heures), minute=int(minutes), second=0, microsecond=0)
             params['departure_time'] = departure_time
             
             if mode == 'driving':
@@ -65,6 +98,12 @@ def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart):
             if element['status'] == 'OK':
                 temps = element['duration']['text']
                 distance = element['distance']['text']
+                
+                # Vérifier s'il y a des infos de trafic
+                if 'duration_in_traffic' in element:
+                    temps_trafic = element['duration_in_traffic']['text']
+                    return temps_trafic, distance, '✅ OK (avec trafic)'
+                
                 return temps, distance, '✅ OK'
             else:
                 return 'Erreur', '-', f"❌ {element['status']}"
@@ -89,12 +128,16 @@ with st.sidebar:
     st.markdown("---")
     
     st.markdown("### 📊 Format CSV attendu")
-    st.code("""Origine,Destination,Mode de transport,Heure de départ
-Adresse 1,Adresse 2,VOITURE,08:00
-Adresse 3,Adresse 4,TRANSPORTS,09:30""")
+    st.code("""Origine,Destination,Mode de transport,Heure de départ,Jour
+Adresse 1,Adresse 2,VOITURE,08:00,Lundi
+Adresse 3,Adresse 4,TRANSPORTS,09:30,Mercredi""")
     
     st.markdown("**Modes acceptés:**")
     st.markdown("- VOITURE\n- TRANSPORTS\n- VELO\n- MARCHE")
+    
+    st.markdown("**Jours acceptés:**")
+    st.markdown("- Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche")
+    st.caption("(Facultatif - sinon calcul pour aujourd'hui)")
 
 # Zone principale
 col1, col2 = st.columns([2, 1])
@@ -163,7 +206,7 @@ if uploaded_file is not None:
                         status_text = st.empty()
                         
                         # Conteneur pour les résultats en temps réel
-                        results_container = st.container()
+                        results_placeholder = st.empty()
                         
                         resultats = []
                         
@@ -172,39 +215,62 @@ if uploaded_file is not None:
                             # Mise à jour de la progression
                             progress = (idx + 1) / len(df)
                             progress_bar.progress(progress)
-                            status_text.text(f"Traitement: {idx + 1}/{len(df)} trajets")
+                            status_text.text(f"⏳ Traitement: {idx + 1}/{len(df)} trajets")
                             
                             # Récupérer les données
                             origine = row['Origine']
                             destination = row['Destination']
                             mode = obtenir_mode_transport(row['Mode de transport'])
                             heure = row.get('Heure de départ', row.get('Heure de dÃ©part', ''))
+                            jour = row.get('Jour', '')
                             
                             # Calculer le trajet
-                            temps, distance, statut = calculer_temps_trajet(
-                                gmaps, origine, destination, mode, heure
-                            )
+                            try:
+                                temps, distance, statut = calculer_temps_trajet(
+                                    gmaps, origine, destination, mode, heure, jour
+                                )
+                            except Exception as e:
+                                temps, distance, statut = 'Erreur', '-', f'❌ {str(e)}'
                             
                             # Stocker les résultats
                             resultats.append({
-                                'Origine': origine,
-                                'Destination': destination,
-                                'Mode de transport': row['Mode de transport'],
-                                'Heure de départ': heure,
+                                '#': idx + 1,
+                                'Origine': origine[:50] + '...' if len(origine) > 50 else origine,
+                                'Destination': destination[:50] + '...' if len(destination) > 50 else destination,
+                                'Mode': row['Mode de transport'],
+                                'Jour': jour if jour else 'Aujourd\'hui',
+                                'Heure': heure,
                                 'Temps de trajet': temps,
                                 'Distance': distance,
                                 'Statut': statut
                             })
                             
+                            # Afficher les résultats en temps réel
+                            if len(resultats) > 0:
+                                df_temp = pd.DataFrame(resultats)
+                                results_placeholder.dataframe(df_temp, use_container_width=True, height=400)
+                            
                             # Pause pour éviter de surcharger l'API
-                            time.sleep(0.2)
+                            time.sleep(0.5)
                         
                         # Compléter la progression
                         progress_bar.progress(1.0)
                         status_text.text(f"✅ Calcul terminé ! {len(df)}/{len(df)} trajets")
                         
-                        # Créer le DataFrame de résultats
+                        # Créer le DataFrame de résultats complet
                         df_resultats = pd.DataFrame(resultats)
+                        
+                        # Préparer le DataFrame pour le téléchargement (avec toutes les colonnes originales)
+                        df_download = pd.DataFrame([{
+                            'Origine': df.iloc[i]['Origine'],
+                            'Destination': df.iloc[i]['Destination'],
+                            'Mode de transport': df.iloc[i]['Mode de transport'],
+                            'Heure de départ': df.iloc[i].get('Heure de départ', df.iloc[i].get('Heure de dÃ©part', '')),
+                            'Jour': df.iloc[i].get('Jour', ''),
+                            'Temps de trajet': resultats[i]['Temps de trajet'],
+                            'Distance': resultats[i]['Distance'],
+                            'Statut': resultats[i]['Statut']
+                        } for i in range(len(df))])
                         
                         # Afficher les résultats
                         st.markdown("---")
@@ -222,15 +288,8 @@ if uploaded_file is not None:
                         with col3:
                             st.metric("❌ Erreurs", erreurs)
                         
-                        # Tableau des résultats
-                        st.dataframe(
-                            df_resultats,
-                            use_container_width=True,
-                            height=400
-                        )
-                        
                         # Bouton de téléchargement
-                        csv = df_resultats.to_csv(index=False, encoding='utf-8-sig')
+                        csv = df_download.to_csv(index=False, encoding='utf-8-sig')
                         st.download_button(
                             label="⬇️ Télécharger les résultats (CSV)",
                             data=csv,
