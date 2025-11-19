@@ -38,6 +38,19 @@ def obtenir_mode_transport(mode):
     }
     return modes.get(mode.upper(), 'driving')
 
+# Fonction pour générer l'URL Google Maps
+def generer_url_google_maps(origine, destination, mode):
+    base_url = "https://www.google.com/maps/dir/?api=1"
+    mode_map = {
+        'driving': 'driving',
+        'transit': 'transit',
+        'bicycling': 'bicycling',
+        'walking': 'walking'
+    }
+    
+    url = f"{base_url}&origin={origine}&destination={destination}&travelmode={mode_map.get(mode, 'driving')}"
+    return url
+
 # Fonction pour calculer un trajet
 def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart, jour_semaine=None):
     try:
@@ -232,6 +245,9 @@ if uploaded_file is not None:
                             except Exception as e:
                                 temps, distance, statut = 'Erreur', '-', f'❌ {str(e)}'
                             
+                            # Générer l'URL Google Maps
+                            url_maps = generer_url_google_maps(origine, destination, mode)
+                            
                             # Stocker les résultats
                             resultats.append({
                                 '#': idx + 1,
@@ -242,13 +258,18 @@ if uploaded_file is not None:
                                 'Heure': heure,
                                 'Temps de trajet': temps,
                                 'Distance': distance,
-                                'Statut': statut
+                                'Statut': statut,
+                                'URL': url_maps,
+                                'Origine_complete': origine,
+                                'Destination_complete': destination
                             })
                             
                             # Afficher les résultats en temps réel
                             if len(resultats) > 0:
                                 df_temp = pd.DataFrame(resultats)
-                                results_placeholder.dataframe(df_temp, use_container_width=True, height=400)
+                                # Créer un DataFrame avec liens cliquables
+                                df_display = df_temp[['#', 'Origine', 'Destination', 'Mode', 'Jour', 'Heure', 'Temps de trajet', 'Distance', 'Statut']].copy()
+                                results_placeholder.dataframe(df_display, use_container_width=True, height=400)
                             
                             # Pause pour éviter de surcharger l'API
                             time.sleep(0.5)
@@ -269,6 +290,7 @@ if uploaded_file is not None:
                             'Jour': df.iloc[i].get('Jour', ''),
                             'Temps de trajet': resultats[i]['Temps de trajet'],
                             'Distance': resultats[i]['Distance'],
+                            'Lien Google Maps': resultats[i]['URL'],
                             'Statut': resultats[i]['Statut']
                         } for i in range(len(df))])
                         
@@ -287,6 +309,23 @@ if uploaded_file is not None:
                             st.metric("✅ Succès", succes)
                         with col3:
                             st.metric("❌ Erreurs", erreurs)
+                        
+                        # Afficher le tableau avec les liens cliquables
+                        st.markdown("#### 📋 Tableau des résultats")
+                        st.markdown("💡 *Cliquez sur 'Voir l'itinéraire' pour ouvrir dans Google Maps*")
+                        
+                        # Créer un affichage interactif avec liens
+                        for idx, row in df_resultats.iterrows():
+                            with st.expander(f"📍 Trajet #{row['#']} - {row['Origine'][:30]}... → {row['Destination'][:30]}..."):
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.write(f"**Origine:** {row['Origine_complete']}")
+                                    st.write(f"**Destination:** {row['Destination_complete']}")
+                                    st.write(f"**Mode:** {row['Mode']} | **Jour:** {row['Jour']} | **Heure:** {row['Heure']}")
+                                    st.write(f"**⏱️ Temps:** {row['Temps de trajet']} | **📏 Distance:** {row['Distance']}")
+                                    st.write(f"**Statut:** {row['Statut']}")
+                                with col2:
+                                    st.link_button("🗺️ Voir l'itinéraire", row['URL'], use_container_width=True)
                         
                         # Bouton de téléchargement
                         csv = df_download.to_csv(index=False, encoding='utf-8-sig')
