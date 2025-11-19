@@ -1,0 +1,284 @@
+import streamlit as st
+import googlemaps
+import pandas as pd
+from datetime import datetime
+import time
+import io
+
+# Configuration de la page
+st.set_page_config(
+    page_title="Calculateur de Temps de Trajet",
+    page_icon="🗺️",
+    layout="wide"
+)
+
+# CSS personnalisé
+st.markdown("""
+    <style>
+    .main {
+        padding: 2rem;
+    }
+    .stAlert {
+        margin-top: 1rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Titre
+st.title("🗺️ Calculateur de Temps de Trajet Google Maps")
+st.markdown("---")
+
+# Fonction pour convertir le mode de transport
+def obtenir_mode_transport(mode):
+    modes = {
+        'VOITURE': 'driving',
+        'TRANSPORTS': 'transit',
+        'VELO': 'bicycling',
+        'MARCHE': 'walking'
+    }
+    return modes.get(mode.upper(), 'driving')
+
+# Fonction pour calculer un trajet
+def calculer_temps_trajet(gmaps, origine, destination, mode, heure_depart):
+    try:
+        params = {
+            'origins': origine,
+            'destinations': destination,
+            'mode': mode,
+            'language': 'fr'
+        }
+        
+        if heure_depart and str(heure_depart).strip():
+            today = datetime.now()
+            heures, minutes = str(heure_depart).split(':')
+            departure_time = today.replace(hour=int(heures), minute=int(minutes), second=0)
+            params['departure_time'] = departure_time
+            
+            if mode == 'driving':
+                params['traffic_model'] = 'best_guess'
+        
+        result = gmaps.distance_matrix(**params)
+        
+        if result['status'] == 'OK':
+            element = result['rows'][0]['elements'][0]
+            
+            if element['status'] == 'OK':
+                temps = element['duration']['text']
+                distance = element['distance']['text']
+                return temps, distance, '✅ OK'
+            else:
+                return 'Erreur', '-', f"❌ {element['status']}"
+        else:
+            return 'Erreur', '-', f"❌ {result['status']}"
+            
+    except Exception as e:
+        return 'Erreur', '-', f"❌ {str(e)}"
+
+# Sidebar pour la configuration
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    
+    st.info("📌 **Prérequis**\n\nActivez ces APIs dans Google Cloud Console:\n- Maps JavaScript API\n- Distance Matrix API")
+    
+    api_key = st.text_input(
+        "🔑 Clé API Google Maps",
+        type="password",
+        help="Obtenez votre clé sur console.cloud.google.com"
+    )
+    
+    st.markdown("---")
+    
+    st.markdown("### 📊 Format CSV attendu")
+    st.code("""Origine,Destination,Mode de transport,Heure de départ
+Adresse 1,Adresse 2,VOITURE,08:00
+Adresse 3,Adresse 4,TRANSPORTS,09:30""")
+    
+    st.markdown("**Modes acceptés:**")
+    st.markdown("- VOITURE\n- TRANSPORTS\n- VELO\n- MARCHE")
+
+# Zone principale
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.header("📁 Importer votre fichier CSV")
+    uploaded_file = st.file_uploader(
+        "Choisissez un fichier CSV",
+        type=['csv'],
+        help="Le fichier doit contenir les colonnes: Origine, Destination, Mode de transport, Heure de départ"
+    )
+
+with col2:
+    st.header("ℹ️ Informations")
+    if uploaded_file:
+        st.success(f"✅ Fichier chargé: {uploaded_file.name}")
+    else:
+        st.warning("⏳ En attente d'un fichier...")
+
+# Si un fichier est uploadé
+if uploaded_file is not None:
+    try:
+        # Lire le CSV
+        df = pd.read_csv(uploaded_file)
+        
+        # Vérifier les colonnes
+        colonnes_requises = ['Origine', 'Destination', 'Mode de transport']
+        colonnes_manquantes = [col for col in colonnes_requises if col not in df.columns]
+        
+        if colonnes_manquantes:
+            st.error(f"❌ Colonnes manquantes: {', '.join(colonnes_manquantes)}")
+        else:
+            st.success(f"✅ {len(df)} trajets détectés")
+            
+            # Aperçu des données
+            with st.expander("👀 Aperçu des données", expanded=True):
+                st.dataframe(df, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # Bouton de calcul
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                bouton_calcul = st.button(
+                    "🚀 Calculer les temps de trajet",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not api_key
+                )
+            
+            if not api_key:
+                st.warning("⚠️ Veuillez entrer votre clé API dans la barre latérale")
+            
+            # Si le bouton est cliqué
+            if bouton_calcul:
+                if not api_key:
+                    st.error("❌ Clé API manquante !")
+                else:
+                    try:
+                        # Initialiser Google Maps
+                        gmaps = googlemaps.Client(key=api_key)
+                        
+                        # Barre de progression
+                        st.markdown("### 📊 Progression")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # Conteneur pour les résultats en temps réel
+                        results_container = st.container()
+                        
+                        resultats = []
+                        
+                        # Calculer chaque trajet
+                        for idx, row in df.iterrows():
+                            # Mise à jour de la progression
+                            progress = (idx + 1) / len(df)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Traitement: {idx + 1}/{len(df)} trajets")
+                            
+                            # Récupérer les données
+                            origine = row['Origine']
+                            destination = row['Destination']
+                            mode = obtenir_mode_transport(row['Mode de transport'])
+                            heure = row.get('Heure de départ', row.get('Heure de dÃ©part', ''))
+                            
+                            # Calculer le trajet
+                            temps, distance, statut = calculer_temps_trajet(
+                                gmaps, origine, destination, mode, heure
+                            )
+                            
+                            # Stocker les résultats
+                            resultats.append({
+                                'Origine': origine,
+                                'Destination': destination,
+                                'Mode de transport': row['Mode de transport'],
+                                'Heure de départ': heure,
+                                'Temps de trajet': temps,
+                                'Distance': distance,
+                                'Statut': statut
+                            })
+                            
+                            # Pause pour éviter de surcharger l'API
+                            time.sleep(0.2)
+                        
+                        # Compléter la progression
+                        progress_bar.progress(1.0)
+                        status_text.text(f"✅ Calcul terminé ! {len(df)}/{len(df)} trajets")
+                        
+                        # Créer le DataFrame de résultats
+                        df_resultats = pd.DataFrame(resultats)
+                        
+                        # Afficher les résultats
+                        st.markdown("---")
+                        st.markdown("### 📊 Résultats")
+                        
+                        # Statistiques
+                        col1, col2, col3 = st.columns(3)
+                        succes = len(df_resultats[df_resultats['Statut'].str.contains('OK', na=False)])
+                        erreurs = len(df_resultats) - succes
+                        
+                        with col1:
+                            st.metric("Total trajets", len(df_resultats))
+                        with col2:
+                            st.metric("✅ Succès", succes)
+                        with col3:
+                            st.metric("❌ Erreurs", erreurs)
+                        
+                        # Tableau des résultats
+                        st.dataframe(
+                            df_resultats,
+                            use_container_width=True,
+                            height=400
+                        )
+                        
+                        # Bouton de téléchargement
+                        csv = df_resultats.to_csv(index=False, encoding='utf-8-sig')
+                        st.download_button(
+                            label="⬇️ Télécharger les résultats (CSV)",
+                            data=csv,
+                            file_name=f"resultats_trajets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            type="primary",
+                            use_container_width=True
+                        )
+                        
+                        # Afficher les erreurs si présentes
+                        if erreurs > 0:
+                            with st.expander("⚠️ Détails des erreurs", expanded=False):
+                                df_erreurs = df_resultats[~df_resultats['Statut'].str.contains('OK', na=False)]
+                                st.dataframe(df_erreurs, use_container_width=True)
+                        
+                        st.success("🎉 Traitement terminé avec succès !")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors du traitement: {str(e)}")
+                        st.info("💡 Vérifiez que votre clé API est correcte et que les APIs nécessaires sont activées.")
+    
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la lecture du fichier: {str(e)}")
+        st.info("💡 Assurez-vous que votre fichier CSV est bien formaté.")
+else:
+    # Instructions si aucun fichier
+    st.info("👆 Commencez par uploader votre fichier CSV")
+    
+    st.markdown("### 🎯 Comment utiliser cette application ?")
+    st.markdown("""
+    1. **Obtenez une clé API** sur [Google Cloud Console](https://console.cloud.google.com/)
+    2. **Activez les APIs** nécessaires (Maps JavaScript API et Distance Matrix API)
+    3. **Entrez votre clé API** dans la barre latérale
+    4. **Uploadez votre fichier CSV** avec vos trajets
+    5. **Cliquez sur "Calculer"** et attendez les résultats
+    6. **Téléchargez** le fichier CSV avec les temps de trajet calculés
+    """)
+    
+    st.markdown("### 💰 Tarification Google Maps")
+    st.info("""
+    - 💵 **200$ de crédit gratuit par mois** (~40 000 requêtes)
+    - 📊 Distance Matrix API: ~0.005$ par requête
+    - 💳 Carte bancaire requise (même pour la version gratuite)
+    """)
+
+# Footer
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: #666;'>🗺️ Calculateur de Temps de Trajet - Propulsé par Google Maps API</div>",
+    unsafe_allow_html=True
+)
